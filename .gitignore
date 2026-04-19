@@ -1,8 +1,6 @@
 /target/
 Cargo.lock
 *.exe
-*.dll
-*.sys
 *.pdb
 /.idea/
 /.vscode/
