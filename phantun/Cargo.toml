@@ -1,0 +1,37 @@
+[package]
+name = "phantun"
+version = "0.8.1"
+edition = "2024"
+authors = ["Datong Sun <dndx@idndx.com>"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/dndx/phantun"
+readme = "README.md"
+description = """
+Transforms UDP stream into (fake) TCP streams that can go through
+Layer 3 & Layer 4 (NAPT) firewalls/NATs.
+"""
+
+[[bin]]
+name = "phantun-client"
+path = "src/bin/client.rs"
+
+[dependencies]
+clap = { version = "4", features = ["cargo"] }
+socket2 = { version = "0", features = ["all"] }
+fake-tcp = { path = "../fake-tcp", version = "0" }
+tokio-util = "0"
+pretty_env_logger = "0"
+num_cpus = "1"
+tokio = { workspace = true }
+log = { workspace = true }
+serde = { workspace = true }
+serde_json = "1"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tokio-tun = "0"
+neli = "0"
+nix = { version = "0", features = ["net", "uio", "socket"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+wintun = "0.5"
+ipnetwork = "0"
