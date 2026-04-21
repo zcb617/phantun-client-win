@@ -1,13 +1,15 @@
 use clap::{crate_version, Arg, ArgAction, Command};
 use fake_tcp::packet::MAX_PACKET_LEN;
 use fake_tcp::{Socket, Stack};
-use log::{debug, error, info, warn};
+use log::{debug, error, info};
 use phantun::utils::{new_udp_reuseport, udp_recv_pktinfo};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::io;
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, SocketAddrV4, SocketAddrV6};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+#[cfg(target_os = "linux")]
+use std::net::{SocketAddrV4, SocketAddrV6};
 use std::sync::Arc;
 use tokio::sync::{Notify, RwLock};
 use tokio::time;
@@ -239,6 +241,8 @@ async fn main() -> io::Result<()> {
     info!("Fake TCP local IP: {}", tun_local_addr);
 
     let udp_sock = Arc::new(new_udp_reuseport(local_addr));
+    #[cfg(target_os = "windows")]
+    let udp_sock_workers = udp_sock.clone();
     let connections = Arc::new(RwLock::new(HashMap::<SocketAddr, Arc<Socket>>::new()));
 
     let mut stack = Stack::new(tun_devices, tun_local_addr, tun_peer6);
@@ -281,20 +285,15 @@ async fn main() -> io::Result<()> {
                 let sock = sock.clone();
                 let quit = quit.clone();
                 let packet_received = packet_received.clone();
+                #[cfg(target_os = "windows")]
+                let udp_sock = udp_sock_workers.clone();
 
                 tokio::spawn(async move {
+                    #[cfg(target_os = "linux")]
                     let mut buf_udp = [0u8; MAX_PACKET_LEN];
                     let mut buf_tcp = [0u8; MAX_PACKET_LEN];
                     #[cfg(target_os = "windows")]
-                    let udp_sock = {
-                        let bind_addr = match udp_remote_addr {
-                            SocketAddr::V4(_) => SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::UNSPECIFIED, 0)),
-                            SocketAddr::V6(a) => SocketAddr::V6(SocketAddrV6::new(Ipv6Addr::UNSPECIFIED, 0, a.flowinfo(), a.scope_id())),
-                        };
-                        let s = new_udp_reuseport(bind_addr);
-                        s.connect(udp_remote_addr).await.unwrap();
-                        s
-                    };
+                    let udp_sock = udp_sock;
                     #[cfg(target_os = "linux")]
                     let udp_sock = {
                         let bind_addr = match (udp_remote_addr, udp_local_addr) {
@@ -321,6 +320,37 @@ async fn main() -> io::Result<()> {
                         s
                     };
 
+                    #[cfg(target_os = "windows")]
+                    loop {
+                        tokio::select! {
+                            res = sock.recv(&mut buf_tcp) => {
+                                match res {
+                                    Some(size) => {
+                                        if size > 0 {
+                                            if let Err(e) = udp_sock.send_to(&buf_tcp[..size], udp_remote_addr).await {
+                                                error!("Unable to send UDP packet to {}: {}, closing connection", e, remote_addr);
+                                                quit.cancel();
+                                                return;
+                                            }
+                                        }
+                                    },
+                                    None => {
+                                        debug!("removed fake TCP socket from connections table");
+                                        quit.cancel();
+                                        return;
+                                    },
+                                }
+
+                                packet_received.notify_one();
+                            },
+                            _ = quit.cancelled() => {
+                                debug!("worker {} terminated", i);
+                                return;
+                            },
+                        };
+                    }
+
+                    #[cfg(target_os = "linux")]
                     loop {
                         tokio::select! {
                             Ok(size) = udp_sock.recv(&mut buf_udp) => {
